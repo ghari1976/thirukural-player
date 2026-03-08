@@ -930,6 +930,27 @@ function init() {
   document.getElementById('kuralInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') loadKural();
   });
+  // Detect voice engine after a short delay (RV script needs time to load)
+  setTimeout(detectAndShowVoiceEngine, 2500);
+}
+
+// Detect which TTS engine is available and show it in the UI
+function detectAndShowVoiceEngine() {
+  const el = document.getElementById('voiceEngineInfo');
+  if (!el) return;
+
+  if (rvReady && window.responsiveVoice) {
+    el.innerHTML = `<span style="color:#6dca88">✅ Tamil Female Voice ready</span> · <span style="color:var(--gold)">ResponsiveVoice TTS</span> · அழகான தமிழ் பெண் குரல்`;
+  } else {
+    // Check Web Speech API for Tamil
+    const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    const taVoice = voices.find(v => v.lang && v.lang.startsWith('ta'));
+    if (taVoice) {
+      el.innerHTML = `<span style="color:#6dca88">✅ Tamil voice found</span> · <span style="color:var(--gold)">${taVoice.name}</span> (${taVoice.lang})`;
+    } else {
+      el.innerHTML = `<span style="color:#e09040">⚠️ No Tamil voice on this device.</span> Will use MyMemory online TTS. <br><span style="color:var(--muted);font-size:0.78rem;">For best quality: on Android open Settings → General Management → Text-to-speech → install Google TTS → add Tamil language.</span>`;
+    }
+  }
 }
 
 function createStars() {
@@ -1048,10 +1069,8 @@ function renderKuralCard(k, adh) {
     </div>
     <div class="player-section">
       <div class="player-title">Song Recitation · பாடல் அமைப்பு</div>
-      <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
-        <span style="font-size:1.3rem;">🎙️</span>
-        <span style="font-size:0.85rem;color:var(--gold);font-family:'Cinzel Decorative',serif;letter-spacing:0.05em;">Google Tamil TTS</span>
-        <span style="font-size:0.8rem;color:var(--muted);">· Native South Indian Female Voice · இயல்பான தமிழ் குரல்</span>
+      <div id="voiceEngineInfo" style="margin-bottom:1rem;padding:0.6rem 1rem;background:rgba(201,168,76,0.07);border:1px solid rgba(201,168,76,0.2);border-radius:8px;font-size:0.82rem;color:var(--muted);line-height:1.6;">
+        🔄 Detecting best Tamil voice engine...
       </div>
       <div class="speed-row">
         <span class="speed-label">Speed</span>
@@ -1062,8 +1081,8 @@ function renderKuralCard(k, adh) {
       <div class="progress-bar-wrap">
         <div class="progress-fill" id="progressFill"></div>
         <div style="display:flex;justify-content:space-between;margin-top:4px;">
-          <span style="font-size:0.7rem;color:var(--muted);">முதல் வரி</span>
-          <span style="font-size:0.7rem;color:var(--muted);">இரண்டாம் வரி ✓</span>
+          <span style="font-size:0.7rem;color:var(--muted);">முதல் வரி · Line 1</span>
+          <span style="font-size:0.7rem;color:var(--muted);">இரண்டாம் வரி · Line 2 ✓</span>
         </div>
       </div>
       <div class="player-controls">
@@ -1079,6 +1098,8 @@ function renderKuralCard(k, adh) {
   
   // Re-init voices UI
   loadVoices();
+  // Show which engine is active
+  setTimeout(detectAndShowVoiceEngine, 100);
   // Animate
   card.style.animation = 'none';
   card.offsetHeight;
@@ -1086,122 +1107,145 @@ function renderKuralCard(k, adh) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  AUDIO ENGINE — Google Translate TTS (Native Tamil Female Voice)
-//  Plays each kural line-by-line for authentic South Indian recitation
+//  AUDIO ENGINE — Multi-strategy Tamil TTS
+//  Strategy 1: ResponsiveVoice CDN (best Tamil quality, CORS-safe)
+//  Strategy 2: MyMemory TTS API (free, CORS-safe, Tamil)
+//  Strategy 3: Web Speech API with Tamil voice
+//  Strategy 4: Web Speech API with any available voice (last resort)
 // ═══════════════════════════════════════════════════════════════════
 
-let audioQueue = [];       // array of text segments to speak
+let audioQueue = [];
 let audioQueueIndex = 0;
 let currentAudio = null;
 let isPlaying = false;
+let rvReady = false;   // ResponsiveVoice ready flag
 
-// Build Google Translate TTS URL for Tamil text
-function ttsURL(text) {
+// ── Load ResponsiveVoice library (free CDN, has Tamil female voice) ─
+(function loadRV() {
+  const s = document.createElement('script');
+  s.src = 'https://code.responsivevoice.org/responsivevoice.js?key=FREE';
+  s.onload = () => { rvReady = true; };
+  s.onerror = () => { rvReady = false; };
+  document.head.appendChild(s);
+})();
+
+// ── MyMemory TTS — free, no CORS issues ─────────────────────────────
+function myMemoryTTS(text, onEnd, onError) {
   const encoded = encodeURIComponent(text);
-  return `https://translate.google.com/translate_tts?ie=UTF-8&tl=ta&client=tw-ob&q=${encoded}`;
+  // MyMemory returns MP3 audio directly
+  const url = `https://api.mymemory.translated.net/api/tts?q=${encoded}&lang=ta-IN`;
+  const audio = new Audio(url);
+  currentAudio = audio;
+  audio.playbackRate = Math.max(0.5, Math.min(speed, 1.5));
+  audio.onended = onEnd;
+  audio.onerror = onError;
+  audio.play().catch(onError);
 }
 
-// Main function: speak a kural in segments (line1 pause line2)
+// ── Web Speech API — works on Chrome/Edge/Safari if Tamil installed ─
+function webSpeechTTS(text, onEnd) {
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'ta-IN';
+  utt.rate = Math.max(0.5, Math.min(speed, 1.0));
+  utt.pitch = 1.0;
+  utt.volume = 1;
+
+  // Wait for voices to be loaded, then pick best Tamil voice
+  function doSpeak() {
+    const voices = synth.getVoices();
+    // Priority: ta-IN > ta > any indian voice
+    const taIN = voices.find(v => v.lang === 'ta-IN');
+    const ta   = voices.find(v => v.lang && v.lang.startsWith('ta'));
+    const best = taIN || ta;
+    if (best) {
+      utt.voice = best;
+      utt.lang  = best.lang;
+    }
+    utt.onend   = onEnd;
+    utt.onerror = onEnd;
+    synth.speak(utt);
+  }
+
+  if (synth.getVoices().length > 0) {
+    doSpeak();
+  } else {
+    synth.onvoiceschanged = () => { synth.onvoiceschanged = null; doSpeak(); };
+    // Timeout safety — speak anyway after 1s even if event never fires
+    setTimeout(doSpeak, 1000);
+  }
+}
+
+// ── ResponsiveVoice — Tamil Female, best quality ─────────────────────
+function rvTTS(text, onEnd) {
+  if (!rvReady || !window.responsiveVoice) { onEnd(); return; }
+  window.responsiveVoice.speak(text, 'Tamil Female', {
+    rate: speed,
+    pitch: 1.0,
+    volume: 1,
+    onend: onEnd,
+    onerror: onEnd
+  });
+}
+
+// ── Main speak orchestrator ───────────────────────────────────────────
 function speakKural(k) {
   if (!k) return;
   stopAudio();
-
-  // Build queue: [line1, line2] — each played separately for natural pause
   audioQueue = [k.l1, k.l2];
   audioQueueIndex = 0;
   isPlaying = true;
   setPlayState(true);
-  setStatus('🎵 Loading Tamil audio...');
+  setStatus('🎵 Starting Tamil recitation...');
   playNextInQueue();
 }
 
 function playNextInQueue() {
-  if (audioQueueIndex >= audioQueue.length) {
-    // All segments done
-    isPlaying = false;
-    setPlayState(false);
-    setStatus('✅ Finished · முடிந்தது');
-    endProgress();
-    // Auto-advance playlist
-    if (playlistIndex >= 0 && playlistIndex < playlist.length - 1) {
-      setTimeout(() => {
-        playlistIndex++;
-        loadKural(playlist[playlistIndex]);
-        highlightPlaylistItem(playlistIndex);
-      }, 1500);
+  if (!isPlaying || audioQueueIndex >= audioQueue.length) {
+    if (isPlaying) {
+      isPlaying = false;
+      setPlayState(false);
+      setStatus('✅ Finished · முடிந்தது');
+      endProgress();
+      if (playlistIndex >= 0 && playlistIndex < playlist.length - 1) {
+        setTimeout(() => {
+          playlistIndex++;
+          loadKural(playlist[playlistIndex]);
+          highlightPlaylistItem(playlistIndex);
+        }, 1500);
+      }
     }
     return;
   }
 
-  const text = audioQueue[audioQueueIndex];
-  const url = ttsURL(text);
-
-  const audio = new Audio();
-  audio.crossOrigin = 'anonymous';
-  currentAudio = audio;
-
-  // Show which line is being played
-  const lineLabel = audioQueueIndex === 0 ? 'முதல் வரி (Line 1)' : 'இரண்டாம் வரி (Line 2)';
-  setStatus(`🎵 ${lineLabel} · இயங்குகிறது...`);
-
-  // Highlight current line in the card
+  const text    = audioQueue[audioQueueIndex];
+  const lineNum = audioQueueIndex + 1;
   highlightLine(audioQueueIndex);
-
-  // Progress animation for this segment
   startProgress(audioQueueIndex, audioQueue.length);
+  setStatus(`🎵 வரி ${lineNum} இயங்குகிறது (Line ${lineNum} playing)...`);
 
-  audio.src = url;
-  audio.playbackRate = Math.max(0.5, Math.min(speed, 1.5));
-
-  audio.oncanplaythrough = () => {
-    if (!isPlaying) return;
-    audio.play().catch(err => {
-      console.warn('Audio play error:', err);
-      // Fallback to Web Speech API if Google TTS blocked
-      fallbackWebSpeech(text, () => {
-        audioQueueIndex++;
-        setTimeout(playNextInQueue, 700);
-      });
-    });
-  };
-
-  audio.onended = () => {
+  const advance = () => {
     audioQueueIndex++;
-    // Natural pause between lines (like a recitation)
-    setTimeout(playNextInQueue, 900);
+    setTimeout(playNextInQueue, 800);   // natural pause between lines
   };
 
-  audio.onerror = (e) => {
-    console.warn('Google TTS error, falling back to Web Speech API');
-    fallbackWebSpeech(text, () => {
-      audioQueueIndex++;
-      setTimeout(playNextInQueue, 700);
-    });
-  };
-
-  audio.load();
-}
-
-// ─── Fallback: Web Speech API (if Google TTS is blocked) ──────────
-function fallbackWebSpeech(text, onDone) {
-  setStatus('🗣️ Using device voice (Tamil)...');
-  const synth = window.speechSynthesis;
-  synth.cancel();
-
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = 'ta-IN';
-  utt.rate = Math.max(0.5, Math.min(speed, 1.2));
-  utt.pitch = pitch;
-  utt.volume = 1;
-
-  // Try to pick a Tamil voice
-  const voices = synth.getVoices();
-  const taVoice = voices.find(v => v.lang && v.lang.toLowerCase().includes('ta'));
-  if (taVoice) utt.voice = taVoice;
-
-  utt.onend = onDone;
-  utt.onerror = onDone;
-  synth.speak(utt);
+  // Strategy waterfall
+  if (rvReady && window.responsiveVoice) {
+    // ✅ Strategy 1: ResponsiveVoice Tamil Female (best)
+    setStatus(`🎙️ Tamil Female Voice · வரி ${lineNum}...`);
+    rvTTS(text, advance);
+  } else {
+    // Strategy 2: MyMemory TTS
+    setStatus(`🌐 Loading Tamil audio · வரி ${lineNum}...`);
+    myMemoryTTS(text,
+      advance,   // onEnd
+      () => {    // onError → Strategy 3: Web Speech
+        setStatus(`🗣️ Device Tamil voice · வரி ${lineNum}...`);
+        webSpeechTTS(text, advance);
+      }
+    );
+  }
 }
 
 // Highlight line being spoken in the kural display
@@ -1222,14 +1266,14 @@ function highlightLine(lineIdx) {
 
 function stopAudio() {
   isPlaying = false;
-  audioQueueIndex = audioQueue.length; // prevent queue continuation
+  audioQueueIndex = audioQueue.length;
   if (currentAudio) {
     currentAudio.pause();
     currentAudio.src = '';
     currentAudio = null;
   }
   window.speechSynthesis && window.speechSynthesis.cancel();
-  // Reset line highlights
+  if (window.responsiveVoice) window.responsiveVoice.cancel();
   document.querySelectorAll('.tamil-line').forEach(el => {
     el.style.color = '#f5e8c0';
     el.style.textShadow = 'none';
