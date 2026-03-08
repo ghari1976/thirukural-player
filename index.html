@@ -918,11 +918,6 @@ function getAdhikaram(n) {
 let currentKural = null;
 let playlist = [];
 let playlistIndex = -1;
-let synth = window.speechSynthesis;
-let currentUtterance = null;
-let isPlaying = false;
-let selectedVoice = null;
-let tamilVoices = [];
 let speed = 0.85;
 let pitch = 1.1;
 let progressTimer = null;
@@ -932,10 +927,6 @@ let progressVal = 0;
 function init() {
   createStars();
   populateAdhikaramSelect();
-  loadVoices();
-  if (synth.onvoiceschanged !== undefined) {
-    synth.onvoiceschanged = loadVoices;
-  }
   document.getElementById('kuralInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') loadKural();
   });
@@ -984,36 +975,11 @@ function populateAdhikaramSelect() {
 }
 
 function loadVoices() {
-  const voices = synth.getVoices();
-  tamilVoices = voices.filter(v =>
-    v.lang.includes('ta') || v.name.toLowerCase().includes('tamil') || v.name.toLowerCase().includes('ta-')
-  );
-  const englishVoices = voices.filter(v => v.lang.startsWith('en'));
-  renderVoiceButtons(tamilVoices.length > 0 ? tamilVoices : englishVoices.slice(0,4));
+  // No-op: voice is now handled by Google TTS engine
 }
 
 function renderVoiceButtons(voices) {
-  const container = document.getElementById('voiceContainer');
-  if (!container) return;
-  container.innerHTML = '';
-  
-  if (voices.length === 0) {
-    container.innerHTML = '<span style="color:var(--muted);font-size:0.85rem;font-style:italic;">Default system voice</span>';
-    return;
-  }
-
-  voices.forEach((v, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'voice-btn' + (i === 0 ? ' active' : '');
-    btn.textContent = v.name.replace('Microsoft ', '').replace(' Online (Natural)', '').substring(0,20);
-    btn.onclick = () => {
-      document.querySelectorAll('.voice-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      selectedVoice = v;
-    };
-    container.appendChild(btn);
-  });
-  selectedVoice = voices[0];
+  // No-op: replaced by Google TTS info badge
 }
 
 // ═══ LOAD KURAL ═══════════════════════════════════════════════════
@@ -1082,22 +1048,23 @@ function renderKuralCard(k, adh) {
     </div>
     <div class="player-section">
       <div class="player-title">Song Recitation · பாடல் அமைப்பு</div>
-      <div style="margin-bottom:0.8rem;font-size:0.8rem;color:var(--muted);">Voice:</div>
-      <div class="voice-selector" id="voiceContainer"></div>
+      <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+        <span style="font-size:1.3rem;">🎙️</span>
+        <span style="font-size:0.85rem;color:var(--gold);font-family:'Cinzel Decorative',serif;letter-spacing:0.05em;">Google Tamil TTS</span>
+        <span style="font-size:0.8rem;color:var(--muted);">· Native South Indian Female Voice · இயல்பான தமிழ் குரல்</span>
+      </div>
       <div class="speed-row">
         <span class="speed-label">Speed</span>
-        <input type="range" id="speedSlider" min="0.4" max="1.5" step="0.05" value="${speed}"
+        <input type="range" id="speedSlider" min="0.5" max="1.5" step="0.05" value="${speed}"
           oninput="speed=parseFloat(this.value);document.getElementById('speedVal').textContent=speed.toFixed(2)+'x'">
         <span class="speed-val" id="speedVal">${speed.toFixed(2)}x</span>
       </div>
-      <div class="speed-row">
-        <span class="speed-label">Pitch</span>
-        <input type="range" id="pitchSlider" min="0.5" max="2" step="0.05" value="${pitch}"
-          oninput="pitch=parseFloat(this.value);document.getElementById('pitchVal').textContent=pitch.toFixed(2)">
-        <span class="speed-val" id="pitchVal">${pitch.toFixed(2)}</span>
-      </div>
       <div class="progress-bar-wrap">
         <div class="progress-fill" id="progressFill"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px;">
+          <span style="font-size:0.7rem;color:var(--muted);">முதல் வரி</span>
+          <span style="font-size:0.7rem;color:var(--muted);">இரண்டாம் வரி ✓</span>
+        </div>
       </div>
       <div class="player-controls">
         <button class="ctrl-btn" title="Previous Kural" onclick="navigate(-1)">⏮</button>
@@ -1118,37 +1085,39 @@ function renderKuralCard(k, adh) {
   card.style.animation = 'fadeUp 0.6s ease forwards';
 }
 
-// ═══ SPEECH ══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+//  AUDIO ENGINE — Google Translate TTS (Native Tamil Female Voice)
+//  Plays each kural line-by-line for authentic South Indian recitation
+// ═══════════════════════════════════════════════════════════════════
+
+let audioQueue = [];       // array of text segments to speak
+let audioQueueIndex = 0;
+let currentAudio = null;
+let isPlaying = false;
+
+// Build Google Translate TTS URL for Tamil text
+function ttsURL(text) {
+  const encoded = encodeURIComponent(text);
+  return `https://translate.google.com/translate_tts?ie=UTF-8&tl=ta&client=tw-ob&q=${encoded}`;
+}
+
+// Main function: speak a kural in segments (line1 pause line2)
 function speakKural(k) {
   if (!k) return;
-  stopSpeech();
-  
-  // Build melodic text with pauses
-  const text = `குறள் எண் ${k.num}. ${k.l1}. ${k.l2}.`;
-  
-  const utt = new SpeechSynthesisUtterance(text);
-  
-  // Apply voice
-  if (selectedVoice) utt.voice = selectedVoice;
-  else {
-    const voices = synth.getVoices();
-    const ta = voices.find(v => v.lang.includes('ta'));
-    if (ta) utt.voice = ta;
-  }
-  
-  utt.lang = 'ta-IN';
-  utt.rate = speed;
-  utt.pitch = pitch;
-  utt.volume = 1;
-  
-  utt.onstart = () => {
-    isPlaying = true;
-    setPlayState(true);
-    setStatus('🎵 Playing · இயங்குகிறது...');
-    startProgress();
-  };
-  
-  utt.onend = () => {
+  stopAudio();
+
+  // Build queue: [line1, line2] — each played separately for natural pause
+  audioQueue = [k.l1, k.l2];
+  audioQueueIndex = 0;
+  isPlaying = true;
+  setPlayState(true);
+  setStatus('🎵 Loading Tamil audio...');
+  playNextInQueue();
+}
+
+function playNextInQueue() {
+  if (audioQueueIndex >= audioQueue.length) {
+    // All segments done
     isPlaying = false;
     setPlayState(false);
     setStatus('✅ Finished · முடிந்தது');
@@ -1159,46 +1128,143 @@ function speakKural(k) {
         playlistIndex++;
         loadKural(playlist[playlistIndex]);
         highlightPlaylistItem(playlistIndex);
-      }, 1200);
+      }, 1500);
     }
+    return;
+  }
+
+  const text = audioQueue[audioQueueIndex];
+  const url = ttsURL(text);
+
+  const audio = new Audio();
+  audio.crossOrigin = 'anonymous';
+  currentAudio = audio;
+
+  // Show which line is being played
+  const lineLabel = audioQueueIndex === 0 ? 'முதல் வரி (Line 1)' : 'இரண்டாம் வரி (Line 2)';
+  setStatus(`🎵 ${lineLabel} · இயங்குகிறது...`);
+
+  // Highlight current line in the card
+  highlightLine(audioQueueIndex);
+
+  // Progress animation for this segment
+  startProgress(audioQueueIndex, audioQueue.length);
+
+  audio.src = url;
+  audio.playbackRate = Math.max(0.5, Math.min(speed, 1.5));
+
+  audio.oncanplaythrough = () => {
+    if (!isPlaying) return;
+    audio.play().catch(err => {
+      console.warn('Audio play error:', err);
+      // Fallback to Web Speech API if Google TTS blocked
+      fallbackWebSpeech(text, () => {
+        audioQueueIndex++;
+        setTimeout(playNextInQueue, 700);
+      });
+    });
   };
-  
-  utt.onerror = (e) => {
-    isPlaying = false;
-    setPlayState(false);
-    setStatus(`⚠️ Voice error: ${e.error}`);
-    endProgress();
+
+  audio.onended = () => {
+    audioQueueIndex++;
+    // Natural pause between lines (like a recitation)
+    setTimeout(playNextInQueue, 900);
   };
-  
-  currentUtterance = utt;
+
+  audio.onerror = (e) => {
+    console.warn('Google TTS error, falling back to Web Speech API');
+    fallbackWebSpeech(text, () => {
+      audioQueueIndex++;
+      setTimeout(playNextInQueue, 700);
+    });
+  };
+
+  audio.load();
+}
+
+// ─── Fallback: Web Speech API (if Google TTS is blocked) ──────────
+function fallbackWebSpeech(text, onDone) {
+  setStatus('🗣️ Using device voice (Tamil)...');
+  const synth = window.speechSynthesis;
+  synth.cancel();
+
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'ta-IN';
+  utt.rate = Math.max(0.5, Math.min(speed, 1.2));
+  utt.pitch = pitch;
+  utt.volume = 1;
+
+  // Try to pick a Tamil voice
+  const voices = synth.getVoices();
+  const taVoice = voices.find(v => v.lang && v.lang.toLowerCase().includes('ta'));
+  if (taVoice) utt.voice = taVoice;
+
+  utt.onend = onDone;
+  utt.onerror = onDone;
   synth.speak(utt);
 }
 
-function togglePlay() {
-  if (synth.paused) {
-    synth.resume();
-    isPlaying = true;
-    setPlayState(true);
-    setStatus('🎵 Resumed · தொடர்கிறது');
-    startProgress();
-  } else if (synth.speaking) {
-    synth.pause();
-    isPlaying = false;
-    setPlayState(false);
-    setStatus('⏸ Paused · இடைநிறுத்தப்பட்டது');
-    if (progressTimer) clearInterval(progressTimer);
-  } else {
-    speakKural(currentKural);
+// Highlight line being spoken in the kural display
+function highlightLine(lineIdx) {
+  document.querySelectorAll('.tamil-line').forEach((el, i) => {
+    el.style.transition = 'all 0.3s';
+    if (i === lineIdx) {
+      el.style.color = '#ffd060';
+      el.style.textShadow = '0 0 20px rgba(255,208,80,0.6)';
+      el.style.transform = 'scale(1.03)';
+    } else {
+      el.style.color = '#f5e8c0';
+      el.style.textShadow = 'none';
+      el.style.transform = 'scale(1)';
+    }
+  });
+}
+
+function stopAudio() {
+  isPlaying = false;
+  audioQueueIndex = audioQueue.length; // prevent queue continuation
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.src = '';
+    currentAudio = null;
   }
+  window.speechSynthesis && window.speechSynthesis.cancel();
+  // Reset line highlights
+  document.querySelectorAll('.tamil-line').forEach(el => {
+    el.style.color = '#f5e8c0';
+    el.style.textShadow = 'none';
+    el.style.transform = 'scale(1)';
+  });
 }
 
 function stopSpeech() {
-  synth.cancel();
-  isPlaying = false;
+  stopAudio();
   setPlayState(false);
   setStatus('⏹ Stopped · நிறுத்தப்பட்டது');
   endProgress();
   playlistIndex = -1;
+}
+
+function togglePlay() {
+  if (isPlaying) {
+    // Pause
+    if (currentAudio) currentAudio.pause();
+    window.speechSynthesis && window.speechSynthesis.pause();
+    isPlaying = false;
+    setPlayState(false);
+    setStatus('⏸ Paused · இடைநிறுத்தப்பட்டது');
+    if (progressTimer) clearInterval(progressTimer);
+  } else if (currentAudio && currentAudio.paused && currentAudio.src) {
+    // Resume audio
+    currentAudio.play();
+    isPlaying = true;
+    setPlayState(true);
+    setStatus('🎵 Resumed · தொடர்கிறது');
+    startProgress(audioQueueIndex, audioQueue.length);
+  } else {
+    // Fresh play
+    speakKural(currentKural);
+  }
 }
 
 function setPlayState(playing) {
@@ -1218,16 +1284,18 @@ function setStatus(msg) {
   if (el) el.textContent = msg;
 }
 
-function startProgress() {
-  progressVal = 0;
+function startProgress(segIdx, totalSegs) {
   const fill = document.getElementById('progressFill');
   if (!fill) return;
   if (progressTimer) clearInterval(progressTimer);
+  const segSize = 100 / (totalSegs || 2);
+  progressVal = (segIdx || 0) * segSize;
+  fill.style.width = progressVal + '%';
   progressTimer = setInterval(() => {
-    progressVal = Math.min(progressVal + 1, 100);
+    progressVal = Math.min(progressVal + 0.8, ((segIdx||0) + 1) * segSize);
     fill.style.width = progressVal + '%';
-    if (progressVal >= 100) clearInterval(progressTimer);
-  }, 80);
+    if (progressVal >= ((segIdx||0) + 1) * segSize) clearInterval(progressTimer);
+  }, 60);
 }
 
 function endProgress() {
